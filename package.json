@@ -1,0 +1,28 @@
+{
+  "name": "tvcharts",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "node": "8.5.0",
+    "npm": "5.4.2"
+  },
+  "description": "a daily TV Chart database",
+  "main": "index.js",
+  "scripts": {
+    "start": "node servers/server.js",
+    "dev": "node --inspect servers/server.js debug"
+  },
+  "keywords": [
+    "trakt"
+  ],
+  "author": "Michael Riha",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^4.0.0",
+    "express": "4.15.4",
+    "imdb-api": "^3.1.2",
+    "sqlite3": "^3.1.13",
+    "trakt.tv": "^6.0.2",
+    "winston": "^3.0.0-rc1"
+  }
+}
