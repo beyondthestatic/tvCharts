@@ -10,7 +10,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node servers/server.js",
-    "dev": "node --inspect servers/server.js debug"
+    "dev": "nodemon --inspect servers/server.js debug"
   },
   "keywords": [
     "trakt"
@@ -25,5 +25,8 @@
     "trakt.tv": "^6.0.2",
     "winston": "^3.0.0-rc1",
     "ejs": "^2.5.7"
+  },
+  "devDependencies": {
+    "nodemon": "^1.13.3"
   }
 }

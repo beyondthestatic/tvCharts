@@ -88,14 +88,14 @@ app.get('/showJson', function(req, res) {
         })
   });
 
-  
+
 app.get('/api/history.json', function(req, res) {
       logger.info("file history api is delivered");
       // GUI STUFF NOW
-      
+
       //https://stackoverflow.com/questions/14882310/how-to-implement-file-download-functionality-using-node-js-and-express-so-that
       res.attachment('history.json')
-  
+
         getData().then(function (data) {
            console.log("all DB Data as file :", data);
           res.setHeader('Content-Type', 'application/octet-stream')
@@ -148,6 +148,17 @@ app.get('/getCharts', function(req, res) {
      let fileContent= require(fileName);
       console.log("file content", fileContent);
   });
+
+app.get('/getNetworks', function (req, res) {
+
+   getNetworkSum().then( result => {
+      res.send(JSON.stringify(result));
+   }, err => {
+      console.log("error getting the network sum", err);
+      res.send(JSON.stringify(err));
+   });
+});
+
 
 app.get('/db', function(req, res) {
   });
@@ -378,7 +389,6 @@ function insertShow(show, rank, date) {
    //console.log("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data') VALUES ('"+show.ids.trakt+"', '"+show.ids.slug+"', '"+show.title+"', '"+show.ids.imdb+"', '"+JSON.stringify(show)+"')");
 
    //we do have legacy support for this data, and old data need to be updated
-
    updateShow(show, rank, date).then(function (data) {
       console.log("data is updated to a new extended level", data);
    }).catch(function (error) {
@@ -386,7 +396,7 @@ function insertShow(show, rank, date) {
       //console.log("error:", error);
 
       // insert http://www.sqlitetutorial.net/sqlite-nodejs/insert/
-      db.run("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data') VALUES (?, ?, ?, ?, ?)", [show.ids.trakt, show.ids.slug, show.title,show.ids.imdb,JSON.stringify(show)], function(err) {
+      db.run("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data', 'network') VALUES (?, ?, ?, ?, ?, ?)", [show.ids.trakt, show.ids.slug, show.title,show.ids.imdb,JSON.stringify(show), show.network], function(err) {
         if (err) {
          return console.log(err.message);
         }
@@ -401,6 +411,27 @@ function insertShow(show, rank, date) {
 
 }
 
+function getNetworkSum() {
+   // https://stackoverflow.com/questions/26150232/resolve-javascript-promise-outside-function-scope
+   var promiseResolve, promiseReject;
+
+
+   //return asynch https://developer.ibm.com/node/2016/08/24/promises-in-node-js-an-alternative-to-callbacks/
+   var ret= new Promise(function(resolve, reject){
+       promiseResolve = resolve;
+       promiseReject = reject;
+   });
+
+
+   db.all("SELECT COUNT(*) as volume, network, GROUP_CONCAT(title) as titles from shows WHERE network NOT NULL GROUP BY network ORDER BY volume DESC ", (err, result) => {
+      if (err) {
+      promiseReject("an error on SELECT happend: "+err.message);
+      //console.log(err.message);
+     }
+     promiseResolve(result);
+  });
+  return ret;
+}
 
 function updateShow(show, data, rank) {
 
@@ -435,9 +466,10 @@ function updateShow(show, data, rank) {
 
         // update those dataset where overview from extended data is missing
         if(typeof data.overview=="undefined") {
-           let data = [JSON.stringify(show), result.id];
+           let data = [JSON.stringify(show),show.network, result.id];
            let sql = `UPDATE shows
-                        SET trakt_data = ?
+                        SET trakt_data = ?,
+                        network = ?
                         WHERE id = ?`;
 
             db.run(sql, data, function(err) {
@@ -520,6 +552,61 @@ function getData() {
       return ret;
 }
 
+function getAll() {
+   var promiseResolve, promiseReject;
+   //return asynch https://developer.ibm.com/node/2016/08/24/promises-in-node-js-an-alternative-to-callbacks/
+   var ret= new Promise(function(resolve, reject){
+       promiseResolve = resolve;
+       promiseReject = reject;
+   });
+
+   //first of all get All networks as a dictionary
+   getAllNetworks().then(networks =>  {
+
+
+   // GROUP_CONCAT is tricky because you can not sort the results, they come arbitrary. http://www.sqlite.org/lang_aggfunc.html#groupconcat
+   var query= "SELECT * \
+                  FROM shows";
+
+
+
+   var results= new Array();
+   // function is asynch but not Promise based, http://www.sqlitetutorial.net/sqlite-nodejs/query/
+   db.each(query, (err, result) => {
+
+      if (err) {
+      console.log(err.message);
+      promiseReject("error getData()", err);
+     }
+     // now let's build a nice result object
+     /*
+     var resultElem= { title: result.title, data: [] };
+         results.push(resultElem);
+         //console.log(results.length);
+      */
+      var data= JSON.parse(result.trakt_data);
+      //some old data do not have network included
+      if(data.network) {
+         data.network= data.network.replace("&amp;", "&"); //the network A&E is sabved as A&amp;E
+         console.log(data.ids.trakt+"-Title:"+data.title, data.network);
+         //insertNetworkConnection(data.ids.trakt, data.network, networks);
+         updateNetworks(data.ids.trakt, data.network);
+      }
+
+
+      }, () => {
+         //console.log("RESULTS", results);
+         promiseResolve(results);
+      });
+
+   }).catch(err => console.log("error in finding netowrks", err));
+
+   //return a promise
+   return ret;
+}
+
+//getAll();
+
 function getDate(thisDateFormat) {
    //compair dates:
    var day_time=thisDateFormat.split(' '); // 24/30/2017 22:30:18
@@ -554,4 +641,69 @@ function sortRank_merger(colRankMerger) {
             return -1;
       });
    return values;
+}
+
+function insertNetworkConnection(id, network, networks) {
+
+   //console.log(network, networks[network], networks.hasOwnProperty(network));
+
+   if(!networks.hasOwnProperty(network)) {
+         //https://stackoverflow.com/questions/19337029/insert-if-not-exists-statement-in-sqlite
+         db.run("INSERT OR IGNORE INTO networks(name) VALUES(?)", [network], function(err) {
+           if (err) {
+             return console.log(err);
+           }
+           //if the id is 0 no network has been inserted
+           console.log("A row has been inserted with rowid ${this.lastID}", this.lastID);
+           //WARNING: add this new inserted row to our dictionary but as it is async the if statement above is senseless!
+           networks[network]= this.lastID;
+           console.log("new network", networks[network]);
+        });
+   } else {
+      console.log("network is already inserted", networks[network]);
+   }
+}
+
+function getAllNetworks() {
+   var promiseResolve, promiseReject;
+   //return asynch https://developer.ibm.com/node/2016/08/24/promises-in-node-js-an-alternative-to-callbacks/
+   var ret= new Promise(function(resolve, reject){
+       promiseResolve = resolve;
+       promiseReject = reject;
+   });
+   //get all the networks for a matchup table if the insert fails!
+   var query= "SELECT * \
+                  FROM networks";
+
+
+
+   var results= new Array();
+   // function is asynch but not Promise based, http://www.sqlitetutorial.net/sqlite-nodejs/query/
+   db.each(query, (err, result) => {
+
+      if (err) {
+      console.log(err.message);
+      promiseReject("error getAllNetworks()", err);
+     }
+      //use the name as index to search for it with indexOf quickly
+      results[result.name]= result.id;
+      }, () => {
+         //console.log("RESULTS", results);
+         promiseResolve(results);
+      });
+      //return a promise
+      return ret;
+}
+
+function updateNetworks(id, network) {
+   var query= "UPDATE shows \
+               SET network = ? \
+               WHERE id= ?";
+
+   db.run(query, [network, id], function(err) {
+     if (err) {
+       console.error(err.message);
+     }
+     console.log(`Row(s) updated: ${this.changes}`);
+  });
 }
