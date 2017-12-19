@@ -45,6 +45,8 @@ const path = require('path');
 //deliver static assets such as CSS & JS
 app.use('/static', express.static('public'));
 app.use('/data', express.static('data'));
+// set the view engine to ejs https://scotch.io/tutorials/use-ejs-to-template-your-node-application
+app.set('view engine', 'ejs');
 
 const PORT = process.env.PORT || 3100; //use env.PORT on heroku or 3100 on local ;-)
 
@@ -60,12 +62,19 @@ initTrak();
 app.use('/static', express.static('public'));
 
 app.get('/', function(req, res) {
+     logger.info("root has been called");
+
+    res.render('pages/index');
+
+ });
+
+app.get('/showJson', function(req, res) {
      logger.info("server has started");
      getTrendingShows();
 
      //getPopularShows();
      //getIMDB();
-    res.send("<a href='http://jsonviewer.stack.hu/#http://auspicious-salesman.glitch.me/data/data.json'>let us see some data</a>");
+    res.send("<a href='http://jsonviewer.stack.hu/#http://auspicious-salesman.glitch.me/api/history.json''>let us see some data</a>");
 
  });
 
@@ -76,6 +85,21 @@ app.get('/', function(req, res) {
         getData().then(function (data) {
            console.log("all DB Data:", data);
            res.send(data);
+        })
+  });
+
+  
+app.get('/api/history.json', function(req, res) {
+      logger.info("file history api is delivered");
+      // GUI STUFF NOW
+      
+      //https://stackoverflow.com/questions/14882310/how-to-implement-file-download-functionality-using-node-js-and-express-so-that
+      res.attachment('history.json')
+  
+        getData().then(function (data) {
+           console.log("all DB Data as file :", data);
+          res.setHeader('Content-Type', 'application/octet-stream')
+          res.end(JSON.stringify(data, null, 2), 'utf8')
         })
   });
 
@@ -102,6 +126,21 @@ app.get('/chart_cron', function(req, res) {
     } else {
       res.send("Wrong hash key is provided");
     }
+  });
+
+app.get('/getTrending', function(req, res) {
+     //console.log(req.query.hash, process.env.CRON_KEY);
+
+       getTrendingShows().then(shows => {
+
+         //console.log('shows:', shows[0].show.ids.slug);
+         //saveChartsToDB(shows);
+         res.end();
+       }, err => {
+         logger.log("ERROR in /chart_cron", err);
+         res.send('could not save shows');
+       }
+       );
   });
 
 app.get('/getCharts', function(req, res) {
@@ -160,7 +199,7 @@ function getTrendingShows() {
       promiseReject = reject;
   });
 
-   trakt.shows.trending({ page: 1, limit: 100 }).then(shows => {
+   trakt.shows.trending({ page: 1, limit: 100, extended:'full' }).then(shows => {
        // Contains Object{} response from API (show data)
        //logger.info("the shows", shows);
        //logger.info("get trending shows!");
@@ -321,7 +360,7 @@ function insertTrendingData(data, date) {
 function processShows(data, date) {
    //crawl to all shows
    data.forEach(function (elem, index) {
-         console.log(elem.show.title, date);
+         //console.log(elem.show.title, date);
 
          /* TODO: also grab the data from imdb
          // https://docs.worrbase.com/node/imdb-api/
@@ -334,20 +373,92 @@ function processShows(data, date) {
 }
 
 function insertShow(show, rank, date) {
+   //console.log(show);
    // insert on conflict ignore because 'slug' is unique! https://stackoverflow.com/questions/2779823/sqlite-query-to-insert-a-record-if-not-exists
    //console.log("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data') VALUES ('"+show.ids.trakt+"', '"+show.ids.slug+"', '"+show.title+"', '"+show.ids.imdb+"', '"+JSON.stringify(show)+"')");
 
-   // insert http://www.sqlitetutorial.net/sqlite-nodejs/insert/
-   db.run("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data') VALUES (?, ?, ?, ?, ?)", [show.ids.trakt, show.ids.slug, show.title,show.ids.imdb,JSON.stringify(show)], function(err) {
-     if (err) {
-      return console.log(err.message);
-     }
-     // get the last insert id
-     console.log("A row has been inserted with rowid: "+this.lastID);
-     // now insert the index for the charts ranking
-     insertRanking(show.ids.trakt, rank, date);
+   //we do have legacy support for this data, and old data need to be updated
+
+   updateShow(show, rank, date).then(function (data) {
+      console.log("data is updated to a new extended level", data);
+   }).catch(function (error) {
+      // if update fails it means that there is already a dataset with extended data
+      //console.log("error:", error);
+
+      // insert http://www.sqlitetutorial.net/sqlite-nodejs/insert/
+      db.run("INSERT OR IGNORE INTO shows ('id', 'slug', 'title', 'imdb_id', 'trakt_data') VALUES (?, ?, ?, ?, ?)", [show.ids.trakt, show.ids.slug, show.title,show.ids.imdb,JSON.stringify(show)], function(err) {
+        if (err) {
+         return console.log(err.message);
+        }
+        // get the last insert id
+        console.log("A row has been inserted with rowid: "+this.lastID);
+      });
    });
 
+   // now insert the index for the charts ranking
+  insertRanking(show.ids.trakt, rank, date);
+
+
+}
+
+
+function updateShow(show, data, rank) {
+
+   var promiseResolve, promiseReject;
+   //return asynch https://developer.ibm.com/node/2016/08/24/promises-in-node-js-an-alternative-to-callbacks/
+   var ret= new Promise(function(resolve, reject){
+      promiseResolve = resolve;
+      promiseReject = reject;
+   });
+
+   var insertFlag= true; // this flag is if no update is needed
+   //now test if the show already exists
+   db.all("SELECT * from shows WHERE imdb_id='"+show.ids.imdb+"'", (err, result) => {
+      if (err) {
+      promiseReject("an error on SELECT happend: "+err.message);
+      //console.log(err.message);
+     }
+
+     // if there is no result
+     if(result.length==0)
+         promiseReject("no dataset select has to be a new one so insert it");
+      else {
+         result= result[0]; // all returnes an array, as we just selected one item let's reset it to this one object
+      }
+
+     //TODO: make the promise nicer for the receiving function!
+     if(typeof result.id=="number") {
+        // after we receive an dataset we have to look inside the flat JSON Data to see if it needed to be updated
+        var data= JSON.parse(result.trakt_data);
+        //console.log("trakt_data", data);
+        //console.log("trakt_data overview", typeof data.overview);
+
+        // update those dataset where overview from extended data is missing
+        if(typeof data.overview=="undefined") {
+           let data = [JSON.stringify(show), result.id];
+           let sql = `UPDATE shows
+                        SET trakt_data = ?
+                        WHERE id = ?`;
+
+            db.run(sql, data, function(err) {
+            if (err) {
+              console.error(err.message);
+              promiseReject("an error on UPDATE happend: "+err.message);
+            }
+            console.log('Row(s) updated:', this.changes);
+            if(parseInt(this.changes)==1)
+               promiseResolve("update has been made", this.changes);
+            });
+        } else {
+           promiseReject("needs to insert");
+        }
+     } else {
+        promiseReject("needs to insert");
+     }
+
+  });
+
+  return ret;
 }
 
 function insertRanking(id, rank, date) {
